@@ -61,7 +61,7 @@ def handle_photo(message):
         prompt = "Analyze this trading chart. Provide: Signal (BUY/SELL), Trend, Support/Resistance levels. Keep it professional. English language."
         
         response = client.models.generate_content(
-    model='gemini-3-flash',  # 2.0 helyett próbáld meg az 1.5-öt
+    model='gemini-3.1-flash-lite',  # napi 500 kérés
     contents=[prompt, img]
 )
         
