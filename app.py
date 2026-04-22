@@ -59,7 +59,7 @@ def handle_photo(message):
         prompt = "Analyze this trading chart. Give Signal (BUY/SELL), Trend, and Support/Resistance levels. English please."
         
         response = client.models.generate_content(
-            model='gemini-3-flash', 
+            model='gemini-1.5-flash', 
             contents=[prompt, img]
         )
         
