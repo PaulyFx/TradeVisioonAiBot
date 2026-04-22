@@ -11,7 +11,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-# Using the high-quota model we identified
 MODEL_NAME = 'models/gemini-3.1-flash-lite-preview' 
 
 apihelper.READ_TIMEOUT = 120
@@ -20,7 +19,7 @@ apihelper.CONNECT_TIMEOUT = 90
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# Dictionary to store detailed analysis temporarily
+# Dictionary to store detailed analysis
 analysis_storage = {}
 
 # --- HEALTH CHECK SERVER ---
@@ -42,11 +41,10 @@ def run_health_server():
 def welcome(message):
     welcome_text = (
         "🚀 **TradeVision AI v2.0 Professional**\n\n"
-        "Send me a trading chart, and I will perform a deep technical analysis using:\n"
-        "• Smart Money Concepts (SMC) & ICT\n"
-        "• Advanced Chart & Candle Patterns\n"
-        "• Trendline & Breakout Analysis\n"
-        "• Dynamic Support/Resistance"
+        "Send me a trading chart for a deep institutional analysis:\n"
+        "• SMC (Order Blocks, Breakers, Mitigations)\n"
+        "• ICT (FVG, Liquidity Pools, Killzones)\n"
+        "• Advanced Price Action & Patterns"
     )
     bot.reply_to(message, welcome_text, parse_mode='Markdown')
 
@@ -60,65 +58,60 @@ def handle_photo(message):
         downloaded = bot.download_file(file_info.file_path)
         img = Image.open(io.BytesIO(downloaded))
         
-        # Enhanced Professional Prompt
         prompt = (
-            "Act as a Master Institutional Trader. Analyze this chart using SMC, ICT, and Price Action. "
-            "Look for Order Blocks, Fair Value Gaps (FVG), Liquidity sweeps, and advanced Candle/Chart patterns. "
-            "STRICTLY follow this format for your output:\n\n"
+            "Act as a Master Institutional Trader. Analyze this chart using SMC and ICT concepts. "
+            "Identify Liquidity, Order Blocks, FVGs, and Trend. "
+            "Output format:\n\n"
             "SIGNAL: [BUY / SELL / NEUTRAL]\n"
-            "ENTRY: [Price level]\n"
-            "SL: [Price level]\n"
-            "TP: [Price level]\n"
-            "CONFIDENCE: [0-100%]\n"
+            "ENTRY: [Price]\n"
+            "SL: [Price]\n"
+            "TP: [Price]\n"
+            "CONFIDENCE: [X%]\n"
             "---REASONING--- \n"
-            "[Detailed technical explanation of patterns, SMC/ICT context, and why this signal was generated]"
+            "[Detailed SMC/ICT breakdown]"
         )
         
         response = client.models.generate_content(model=MODEL_NAME, contents=[prompt, img])
         full_analysis = response.text
         
-        # Split summary and reasoning
         if "---REASONING---" in full_analysis:
             summary, reasoning = full_analysis.split("---REASONING---", 1)
         else:
             summary, reasoning = full_analysis, "Detailed technical data analyzed."
 
-        # Store reasoning for the "Read More" button
         chat_id = message.chat.id
         analysis_storage[chat_id] = reasoning.strip()
 
-        # Create "Read More" button
+        # CORRECTED BUTTON KEYWORD: callback_data
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📖 Show Detailed Analysis", callback_query_data="show_details"))
+        markup.add(types.InlineKeyboardButton(text="📖 Show Detailed Analysis", callback_data="show_details"))
 
-        bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status_msg.message_id,
-            text=f"📊 **TRADING SIGNAL**\n\n{summary.strip()}",
-            reply_markup=markup,
-            parse_mode='Markdown'
-        )
+        text_to_send = f"📊 **TRADING SIGNAL**\n\n{summary.strip()}"
+        
+        try:
+            bot.edit_message_text(text_to_send, chat_id, status_msg.message_id, reply_markup=markup, parse_mode='Markdown')
+        except:
+            bot.edit_message_text(text_to_send, chat_id, status_msg.message_id, reply_markup=markup, parse_mode=None)
 
     except Exception as e:
-        print(f"!!! Analysis Error: {e}", flush=True)
-        bot.edit_message_text(f"❌ Error during analysis: `{str(e)[:100]}`", message.chat.id, status_msg.message_id)
+        print(f"!!! Error: {e}", flush=True)
+        bot.edit_message_text(f"❌ Error: `{str(e)[:100]}`", message.chat.id, status_msg.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "show_details")
 def callback_inline(call):
     chat_id = call.message.chat.id
     if chat_id in analysis_storage:
-        details = analysis_storage[chat_id]
-        bot.send_message(chat_id, f"🔍 **DETAILED RATIONALE:**\n\n{details}", parse_mode='Markdown')
-        # Remove from storage after showing
-        del analysis_storage[chat_id]
+        details = f"🔍 **DETAILED RATIONALE:**\n\n{analysis_storage[chat_id]}"
+        try:
+            bot.send_message(chat_id, details, parse_mode='Markdown')
+        except:
+            bot.send_message(chat_id, details, parse_mode=None)
     else:
-        bot.answer_callback_query(call.id, "Analysis expired. Please send a new chart.")
+        bot.answer_callback_query(call.id, "Session expired. Send chart again.")
 
 # --- STARTUP ---
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
-    print(">>> TradeVision AI v2.0 Professional Starting...", flush=True)
-    
     while True:
         try:
             bot.remove_webhook()
