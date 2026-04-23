@@ -13,7 +13,6 @@ MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
-analysis_storage = {}
 
 # --- DATABASE SETUP ---
 def init_db():
@@ -47,47 +46,51 @@ def extract_price(text, label):
 # --- WEB SERVER ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200); self.end_headers(); self.wfile.write(b"TradeVision v3.5 Full Spectrum ACTIVE")
+        self.send_response(200); self.end_headers(); self.wfile.write(b"TradeVision v3.6 ACTIVE")
     def log_message(self, format, *args): return
 
 # --- BOT HANDLERS ---
 @bot.message_handler(commands=['start'])
 def welcome(message):
     send_admin_log(f"User Start: {message.from_user.first_name}")
-    bot.reply_to(message, "🚀 **TradeVision AI v3.5 Full Spectrum**\nSMC/ICT + Price Action + Patterns active.\n\nSend a chart to begin.")
+    bot.reply_to(message, "🚀 **TradeVision AI v3.6 Professional**\nMulti-Strategy analysis active.\n\nSend a chart to begin.")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    send_admin_log(f"📸 Image analysis triggered by: {message.from_user.first_name}")
-    status_msg = bot.reply_to(message, "⏳ *Deep Scanning Structure, Patterns & Candles...*", parse_mode='Markdown')
+    send_admin_log(f"📸 Új elemzés tőle: {message.from_user.first_name}")
+    status_msg = bot.reply_to(message, "⏳ *Processing market data...*", parse_mode='Markdown')
     
     try:
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded = bot.download_file(file_info.file_path)
         img = Image.open(io.BytesIO(downloaded))
         
+        # MÉG SZIGORÚBB PROMPT
         prompt = (
-            "Act as a Master Quantitative Analyst & Price Action Expert. Analyze this chart for an elite trading setup.\n\n"
-            "1. MARKET STRUCTURE: Identify BOS (Break of Structure), CHoCH (Change of Character), and current trend (Bullish/Bearish/Sideways).\n"
-            "2. CHART PATTERNS: Look for Head & Shoulders, Double Tops/Bottoms, Triangles, Wedges, or Flags.\n"
-            "3. CANDLESTICK PATTERNS: Identify key candles like Pin Bars, Engulfing patterns, Morning/Evening Stars, or Dojis at key levels.\n"
-            "4. INSTITUTIONAL CONTEXT: Confirm with SMC/ICT (Order Blocks, FVG, Liquidity).\n"
-            "5. MACRO/FUNDAMENTALS: Incorporate current market sentiment.\n\n"
-            "STRICT FORMAT (Part 1):\n"
-            "SYMBOL: [Asset Name]\nSIGNAL: [BUY/SELL/NO TRADE]\nENTRY: [Price]\nSL: [Price]\nTP: [Price]\nCONFIDENCE: [X%]\n"
-            "PATTERNS FOUND: [List specific chart/candle patterns detected]\n"
-            "|||\n"
-            "PART 2 (DETAILED CONFLUENCE):\n[Full breakdown of Market Structure, SMC logic, and how the patterns confirm the signal]"
+            "Analyze this trading chart. You MUST output your response in two distinct parts separated by exactly '|||'.\n\n"
+            "PART 1 (BRIEF SUMMARY ONLY):\n"
+            "SYMBOL: [Name]\nSIGNAL: [BUY/SELL/NEUTRAL]\nENTRY: [Price]\nSL: [Price]\nTP: [Price]\nCONFIDENCE: [X%]\n"
+            "PATTERNS: [Found patterns]\n\n"
+            "|||\n\n"
+            "PART 2 (DETAILED TECHNICAL ANALYSIS):\n"
+            "Provide a deep breakdown of Market Structure (BOS/CHoCH), SMC/ICT logic (Order Blocks, FVG), Wyckoff context, and Candlestick confirmation."
         )
         
         response = client.models.generate_content(model=MODEL_NAME, contents=[prompt, img])
         res_text = response.text
         
+        # OKOSABB SZÉTVÁLASZTÁS
         if "|||" in res_text:
-            summary, reasoning = res_text.split("|||", 1)
+            parts = res_text.split("|||")
+            summary = parts[0].strip()
+            reasoning = parts[1].strip()
         else:
-            summary = res_text
-            reasoning = "Check confluence manually."
+            # Ha az AI elfelejtené az elválasztót, megpróbáljuk mi kettévágni a legfontosabb kulcsszónál
+            if "PART 2" in res_text:
+                summary, reasoning = res_text.split("PART 2", 1)
+            else:
+                summary = "⚠️ Formatting error. Check details below."
+                reasoning = res_text
 
         # DB Mentés
         try:
@@ -101,42 +104,43 @@ def handle_photo(message):
             conn = sqlite3.connect('trades.db', check_same_thread=False)
             c = conn.cursor()
             c.execute("INSERT INTO signals (msg_id, symbol, type, entry, sl, tp, reasoning, status) VALUES (?,?,?,?,?,?,?,'PENDING')",
-                      (str(status_msg.message_id), sym, "SELL" if "SELL" in summary.upper() else "BUY", entry_p, sl_p, tp_p, reasoning.strip()))
+                      (str(status_msg.message_id), sym, "SELL" if "SELL" in summary.upper() else "BUY", entry_p, sl_p, tp_p, reasoning, "PENDING"))
             conn.commit()
             conn.close()
-        except Exception as e:
-            send_admin_log(f"⚠️ DB Error: {e}")
+        except Exception as db_e:
+            send_admin_log(f"⚠️ DB Error: {db_e}")
 
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton(text="📖 Show Detailed Confluence", callback_data=f"det_{status_msg.message_id}"))
 
-        bot.edit_message_text(f"📊 **FULL SPECTRUM ANALYSIS**\n\n{summary.strip()}", message.chat.id, status_msg.message_id, reply_markup=markup)
-        send_admin_log("✅ Analysis complete.")
+        # Csak a PART 1-et küldjük el
+        bot.edit_message_text(f"📊 **TRADING SIGNAL**\n\n{summary}", message.chat.id, status_msg.message_id, reply_markup=markup)
+        send_admin_log("✅ Rövid szignál elküldve, részletek az adatbázisban.")
 
     except Exception as e:
-        error_str = str(e)
-        if "503" in error_str or "overloaded" in error_str.lower():
-            bot.edit_message_text("⚠️ **AI is currently overloaded.** Please try again in 1 minute.", message.chat.id, status_msg.message_id)
-        else:
-            send_admin_log(f"❌ Error: {e}")
-            bot.edit_message_text("❌ Technical error. Please retry.", message.chat.id, status_msg.message_id)
+        send_admin_log(f"❌ HIBA: {e}")
+        bot.edit_message_text("⚠️ System busy. Please retry in 1 minute.", message.chat.id, status_msg.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("det_"))
 def callback_inline(call):
     msg_id = call.data.split("_")[1]
-    conn = sqlite3.connect('trades.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("SELECT reasoning FROM signals WHERE msg_id = ?", (msg_id,))
-    row = c.fetchone()
-    conn.close()
-    
-    if row:
-        bot.send_message(call.message.chat.id, f"🔍 **TECHNICAL CONFLUENCE:**\n\n{row[0]}")
-    else:
-        bot.answer_callback_query(call.id, "Data expired.")
+    try:
+        conn = sqlite3.connect('trades.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute("SELECT reasoning FROM signals WHERE msg_id = ?", (msg_id,))
+        row = c.fetchone()
+        conn.close()
+        
+        if row and row[0]:
+            bot.send_message(call.message.chat.id, f"🔍 **TECHNICAL CONFLUENCE:**\n\n{row[0]}")
+        else:
+            bot.answer_callback_query(call.id, "Details not found in database.")
+    except Exception as e:
+        send_admin_log(f"⚠️ Callback hiba: {e}")
+        bot.answer_callback_query(call.id, "Error retrieving data.")
 
 if __name__ == "__main__":
     init_db()
     threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 10000))), HealthCheckHandler).serve_forever(), daemon=True).start()
-    send_admin_log("🚀 TradeVision v3.5 Full Spectrum started!")
+    send_admin_log("🚀 TradeVision v3.6 Elite online!")
     bot.infinity_polling()
