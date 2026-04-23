@@ -10,14 +10,16 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 ADMIN_ID = 1578448812 
 
-# IDE ÍRD BE A CSOPORTOD ID-JÁT (pl: -100123456789)
-# Addig is az Admin (Te) privátban tudod használni.
+# IDE ÍRD BE A CSOPORTOD ID-JÁT
 ALLOWED_CHATS = [-1002786610592] 
 
 MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 analysis_storage = {}
+
+# Átmeneti tároló az MTF képeknek
+media_groups = {}
 
 # --- DATABASE SETUP ---
 def init_db():
@@ -42,10 +44,8 @@ def send_admin_log(text):
 
 # --- SECURITY CHECK ---
 def is_authorized(message):
-    # Admin mindig hozzáfér
     if message.from_user.id == ADMIN_ID:
         return True
-    # Csoport ellenőrzés
     if message.chat.id in ALLOWED_CHATS:
         return True
     return False
@@ -67,12 +67,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 # --- BOT HANDLERS ---
 
-# Illetéktelenek kezelése
 @bot.message_handler(func=lambda m: not is_authorized(m))
 def unauthorized_access(message):
     if message.chat.type == 'private':
         bot.reply_to(message, "🛑 **Access Denied.** This is a private AI terminal.")
-    # Segít megtudni a csoport ID-t a logban
     send_admin_log(f"⚠️ Unauthorized access! Chat ID: {message.chat.id} | User: {message.from_user.first_name}")
 
 @bot.message_handler(commands=['start'])
@@ -83,18 +81,42 @@ def welcome(message):
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if not is_authorized(message): return
-    
-    send_admin_log(f"📸 Új elemzés tőle: {message.from_user.first_name}")
-    status_msg = bot.reply_to(message, "⏳ *Analysing the picture...*", parse_mode='Markdown')
-    
-    try:
+
+    # MTF Logika: Megnézzük, hogy album része-e a kép
+    if message.media_group_id:
+        if message.media_group_id not in media_groups:
+            media_groups[message.media_group_id] = []
+            # 2 másodperces időzítő, hogy minden kép beérkezzen az albumból
+            threading.Timer(2.5, process_mtf_group, [message, message.media_group_id]).start()
+        
+        file_info = bot.get_file(message.photo[-1].file_id)
+        downloaded = bot.download_file(file_info.file_path)
+        media_groups[message.media_group_id].append(Image.open(io.BytesIO(downloaded)))
+    else:
+        # Egyetlen kép elemzése
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded = bot.download_file(file_info.file_path)
         img = Image.open(io.BytesIO(downloaded))
-        
-        # PONTOSAN A v3.8 PROMPTJA
+        run_analysis(message, [img])
+
+def process_mtf_group(message, group_id):
+    images = media_groups.get(group_id)
+    if images:
+        run_analysis(message, images)
+        del media_groups[group_id]
+
+def run_analysis(message, images):
+    send_admin_log(f"📸 Új elemzés tőle: {message.from_user.first_name} ({len(images)} kép)")
+    status_msg = bot.reply_to(message, "⏳ *Analysing the picture...*", parse_mode='Markdown')
+    
+    try:
+        # Prompt kiegészítése MTF kontextussal, ha több kép van
+        mtf_context = ""
+        if len(images) > 1:
+            mtf_context = f"I have provided {len(images)} charts of the same asset. Perform a Multi-Timeframe analysis. Use HTF for trend and LTF for entries. "
+
         prompt = (
-            "You are an Elite Institutional Analyst. Use emojis for clarity. "
+            f"You are an Elite Institutional Analyst. {mtf_context}Use emojis for clarity. "
             "You MUST separate Part 1 and Part 2 with '|||'.\n\n"
             "PART 1 (Output exactly in this style):\n"
             "🏷️ SYMBOL: [Asset]\n"
@@ -109,7 +131,8 @@ def handle_photo(message):
             "[Detailed technical analysation using Mutliple Strategy.]"
         )
         
-        response = client.models.generate_content(model=MODEL_NAME, contents=[prompt, img])
+        content_payload = [prompt] + images
+        response = client.models.generate_content(model=MODEL_NAME, contents=content_payload)
         res_text = response.text
         
         if "|||" in res_text:
