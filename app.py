@@ -16,6 +16,7 @@ ALLOWED_CHATS = [-1002786610592]
 # --- WEB APP URL ---
 # Ide kerül majd a jövőbeli Mini Appod linkje. 
 # Amíg nincs kész a weblap, ez egy placeholder link.
+# Később ezt kicseréljük egy "t.me/A_Botod_Neve/app" stílusú linkre!
 WEB_APP_URL = "https://google.com" 
 
 MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
@@ -81,10 +82,9 @@ def unauthorized_access(message):
 def welcome(message):
     if not is_authorized(message): return
     
-    # --- JAVÍTOTT MINI APP GOMB (Inline gombként a csoportok miatt) ---
+    # --- JAVÍTÁS: A csoportos chatekhez URL típusú gomb kell a web_app típus helyett! ---
     markup = types.InlineKeyboardMarkup()
-    web_app = types.WebAppInfo(WEB_APP_URL)
-    markup.add(types.InlineKeyboardButton(text="📱 Open TradeVision Hub", web_app=web_app))
+    markup.add(types.InlineKeyboardButton(text="📱 Open TradeVision Hub", url=WEB_APP_URL))
     
     bot.reply_to(
         message, 
