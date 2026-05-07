@@ -81,10 +81,10 @@ def unauthorized_access(message):
 def welcome(message):
     if not is_authorized(message): return
     
-    # --- MINI APP GOMB HOZZÁADÁSA ---
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    # --- JAVÍTOTT MINI APP GOMB (Inline gombként a csoportok miatt) ---
+    markup = types.InlineKeyboardMarkup()
     web_app = types.WebAppInfo(WEB_APP_URL)
-    markup.add(types.KeyboardButton(text="📱 Open TradeVision Hub", web_app=web_app))
+    markup.add(types.InlineKeyboardButton(text="📱 Open TradeVision Hub", web_app=web_app))
     
     bot.reply_to(
         message, 
