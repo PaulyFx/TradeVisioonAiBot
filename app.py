@@ -13,6 +13,11 @@ ADMIN_ID = 1578448812
 # IDE ÍRD BE A CSOPORTOD ID-JÁT
 ALLOWED_CHATS = [-1002786610592] 
 
+# --- WEB APP URL ---
+# Ide kerül majd a jövőbeli Mini Appod linkje. 
+# Amíg nincs kész a weblap, ez egy placeholder link.
+WEB_APP_URL = "https://google.com" 
+
 MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -66,7 +71,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args): return
 
 # --- BOT HANDLERS ---
-
 @bot.message_handler(func=lambda m: not is_authorized(m))
 def unauthorized_access(message):
     if message.chat.type == 'private':
@@ -76,7 +80,17 @@ def unauthorized_access(message):
 @bot.message_handler(commands=['start'])
 def welcome(message):
     if not is_authorized(message): return
-    bot.reply_to(message, "🚀 **TradeVision AI v3.9b Pro** 🚀\nSecurity active.\nVision Brain active.\nClosed Beta.\nSignals are not 100%!\nDo Your Own Research!\nSend a chart to begin.")
+    
+    # --- MINI APP GOMB HOZZÁADÁSA ---
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    web_app = types.WebAppInfo(WEB_APP_URL)
+    markup.add(types.KeyboardButton(text="📱 Open TradeVision Hub", web_app=web_app))
+    
+    bot.reply_to(
+        message, 
+        "🚀 **TradeVision AI v3.9b Pro** 🚀\nSecurity active.\nVision Brain active.\nClosed Beta.\nSignals are not 100%!\nDo Your Own Research!\nSend a chart to begin.", 
+        reply_markup=markup
+    )
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
