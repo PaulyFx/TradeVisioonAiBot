@@ -17,7 +17,7 @@ ALLOWED_CHATS = [-1002786610592]
 # Ide kerül majd a jövőbeli Mini Appod linkje. 
 # Amíg nincs kész a weblap, ez egy placeholder link.
 # Később ezt kicseréljük egy "t.me/A_Botod_Neve/app" stílusú linkre!
-WEB_APP_URL = "https://google.com" 
+WEB_APP_URL = "tradevisionaihub.netlify.app" 
 
 MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
 client = genai.Client(api_key=GEMINI_API_KEY)
