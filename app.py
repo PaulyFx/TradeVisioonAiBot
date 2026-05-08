@@ -13,7 +13,7 @@ ADMIN_ID = 1578448812
 ALLOWED_CHATS = [-1002786610592] 
 
 # IDE ÍRD BE A @BotFather-TŐL KAPOTT LINKET!
-WEB_APP_URL = "https://t.me/A_Te_Botod_Neve_bot/hub" 
+WEB_APP_URL = "t.me/Tradevisionfxai_bot/Terminal" 
 
 MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -26,10 +26,11 @@ def init_db():
     try:
         conn = sqlite3.connect('trades.db', check_same_thread=False)
         c = conn.cursor()
+        # JAVÍTVA: Hozzáadtuk a 'confidence' oszlopot az adatbázishoz!
         c.execute('''CREATE TABLE IF NOT EXISTS signals 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                       msg_id TEXT, symbol TEXT, type TEXT, entry REAL, sl REAL, tp REAL, 
-                      reasoning TEXT, status TEXT)''')
+                      reasoning TEXT, status TEXT, confidence INTEGER)''')
         conn.commit()
         conn.close()
     except Exception as e:
@@ -58,32 +59,28 @@ def extract_price(text, label):
 # --- WEB SERVER & API ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # API VÉGPONT A WEBLAPNAK
         if self.path == '/api/signals':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*') # Engedi, hogy a Netlify olvassa!
+            self.send_header('Access-Control-Allow-Origin', '*') 
             self.end_headers()
             try:
                 conn = sqlite3.connect('trades.db', check_same_thread=False)
                 c = conn.cursor()
-                c.execute("SELECT symbol, type, entry, sl, tp, reasoning FROM signals ORDER BY id DESC LIMIT 10")
+                # JAVÍTVA: Lekérjük a confidence oszlopot is (ez a 6. index)
+                c.execute("SELECT symbol, type, entry, sl, tp, reasoning, confidence FROM signals ORDER BY id DESC LIMIT 10")
                 rows = c.fetchall()
                 conn.close()
                 
                 signals = []
                 for row in rows:
-                    # Megpróbáljuk kinyerni a confidence-t a szövegből, ha nincs, 85% az alap
-                    conf_match = re.search(r'CONFIDENCE[:\s]*(\d+)%', str(row[5]), re.IGNORECASE)
-                    conf = int(conf_match.group(1)) if conf_match else 85
-                    
                     signals.append({
                         "asset": str(row[0]).upper(),
                         "type": str(row[1]).upper(),
                         "entry": row[2] if row[2] else 0,
                         "sl": row[3] if row[3] else 0,
                         "tp": row[4] if row[4] else 0,
-                        "conf": conf,
+                        "conf": row[6] if row[6] else 85, # Ha valamiért üres lenne, csak akkor 85
                         "logic": "AI Confluence Analysed"
                     })
                 self.wfile.write(json.dumps(signals).encode())
@@ -156,16 +153,26 @@ def run_analysis(message, images):
         else: summary, reasoning = res_text, "Check details."
 
         try:
+            # Precízebb típus kinyerés (pl. NEUTRAL)
+            match_type = re.search(r"SIGNAL:\s*([^\n]+)", summary, re.IGNORECASE)
+            sig_type = match_type.group(1).strip().upper() if match_type else ("SELL" if "SELL" in summary.upper() else "BUY")
+
+            # Confidence kinyerése a szövegből (Mentjük is az adatbázisba!)
+            conf_match = re.search(r'CONFIDENCE[:\s]*(\d+)', summary, re.IGNORECASE)
+            conf_val = int(conf_match.group(1)) if conf_match else 85
+
             entry_p = extract_price(summary, "ENTRY")
             sl_p = extract_price(summary, "STOP LOSS")
             tp_p = extract_price(summary, "TAKE PROFIT")
             sym = "ASSET"
             match_sym = re.search(r"SYMBOL:\s*([\w/]+)", summary)
             if match_sym: sym = match_sym.group(1)
+            
             conn = sqlite3.connect('trades.db', check_same_thread=False)
             c = conn.cursor()
-            c.execute("INSERT INTO signals (msg_id, symbol, type, entry, sl, tp, reasoning, status) VALUES (?,?,?,?,?,?,?,?)",
-                      (str(status_msg.message_id), sym, "SELL" if "SELL" in summary.upper() else "BUY", entry_p, sl_p, tp_p, reasoning.strip(), "PENDING"))
+            # JAVÍTVA: Mentjük a conf_val-t a 9. paraméterként
+            c.execute("INSERT INTO signals (msg_id, symbol, type, entry, sl, tp, reasoning, status, confidence) VALUES (?,?,?,?,?,?,?,?,?)",
+                      (str(status_msg.message_id), sym, sig_type, entry_p, sl_p, tp_p, reasoning.strip(), "PENDING", conf_val))
             conn.commit()
             conn.close()
         except Exception as db_e:
