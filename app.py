@@ -1,13 +1,13 @@
-import os, telebot, threading, sqlite3, re, time, io, json
+import os, telebot, threading, sqlite3, re, time, io, json, requests
 from telebot import apihelper, types
 from google import genai
 from PIL import Image
-import yfinance as yf
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIG ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY', 'DEMO') 
 ADMIN_ID = 1578448812 
 
 ALLOWED_CHATS = [-1002786610592] 
@@ -26,7 +26,6 @@ def init_db():
     try:
         conn = sqlite3.connect('trades.db', check_same_thread=False)
         c = conn.cursor()
-        # JAVÍTVA: Hozzáadtuk a 'confidence' oszlopot az adatbázishoz!
         c.execute('''CREATE TABLE IF NOT EXISTS signals 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                       msg_id TEXT, symbol TEXT, type TEXT, entry REAL, sl REAL, tp REAL, 
@@ -56,6 +55,95 @@ def extract_price(text, label):
         except: return None
     return None
 
+# --- ALPHA VANTAGE PRICE CHECKER ENGINE (SMART LIMIT) ---
+def get_current_price_av(sym):
+    """Lekéri az élő árat az Alpha Vantage API-ról."""
+    s = sym.upper().replace("/", "").replace("-", "")
+    base, quote = s, "USD"
+    
+    if s.endswith("USD") or s.endswith("JPY") or s.endswith("EUR"):
+        base, quote = s[:-3], s[-3:]
+    elif s.endswith("USDT"):
+        base, quote = s[:-4], "USDT"
+        
+    url_currency = f"https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={base}&to_currency={quote}&apikey={ALPHA_VANTAGE_API_KEY}"
+    try:
+        data = requests.get(url_currency).json()
+        if "Realtime Currency Exchange Rate" in data:
+            return float(data["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
+    except Exception: pass
+
+    url_quote = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={s}&apikey={ALPHA_VANTAGE_API_KEY}"
+    try:
+        data = requests.get(url_quote).json()
+        if "Global Quote" in data and "05. price" in data["Global Quote"]:
+            price_str = data["Global Quote"]["05. price"]
+            if price_str: return float(price_str)
+    except Exception: pass
+        
+    return None
+
+def auto_trade_checker():
+    send_admin_log("🔄 AV Auto Checker (Smart Limit) elindítva...")
+    while True:
+        try:
+            conn = sqlite3.connect('trades.db', check_same_thread=False)
+            c = conn.cursor()
+            c.execute("SELECT id, symbol, type, sl, tp FROM signals WHERE status='PENDING'")
+            trades = c.fetchall()
+            conn.close()
+            
+            if not trades:
+                # Ha nincs nyitott trade, ne égessük a kvótát! Alszik 15 percet és újra megnézi az adatbázist.
+                time.sleep(900) 
+                continue 
+            
+            # 1. TRÜKK: Egyedi szimbólumok kigyűjtése (spórolás)
+            unique_symbols = set([t[1] for t in trades])
+            num_symbols = len(unique_symbols)
+            
+            # Árak lekérdezése egyszer szimbólumonként
+            current_prices = {}
+            for sym in unique_symbols:
+                price = get_current_price_av(sym)
+                if price:
+                    current_prices[sym] = price
+                time.sleep(2) # Kicsi szünet az AV rate limit miatt (max 5 hívás / perc)
+
+            # Trade-ek ellenőrzése a memóriában lévő árakkal
+            if current_prices:
+                conn = sqlite3.connect('trades.db', check_same_thread=False)
+                c = conn.cursor()
+                for t_id, sym, t_type, sl, tp in trades:
+                    if sym not in current_prices or not sl or not tp: continue 
+                    
+                    price = current_prices[sym]
+                    new_status = None
+                    
+                    if "BUY" in t_type:
+                        if price >= tp: new_status = "WON"
+                        elif price <= sl: new_status = "LOST"
+                    elif "SELL" in t_type:
+                        if price <= tp: new_status = "WON"
+                        elif price >= sl: new_status = "LOST"
+                        
+                    if new_status:
+                        c.execute("UPDATE signals SET status=? WHERE id=?", (new_status, t_id))
+                        send_admin_log(f"🎯 [AUTO-CLOSE]: {sym} ({t_type}) -> {new_status} (Ár: {price})")
+                
+                conn.commit()
+                conn.close()
+
+            # 2. TRÜKK: Dinamikus időzítő a napi 24 API híváshoz
+            # Képlet: 60 perc szorozva a lekérdezett szimbólumok számával.
+            sleep_minutes = 60 * num_symbols
+            send_admin_log(f"⏱️ AV Checker: {num_symbols} egyedi asset frissítve. Alvás {sleep_minutes} percig a kvóta védelme érdekében.")
+            time.sleep(sleep_minutes * 60)
+            
+        except Exception as e:
+            print(f"Auto Checker hiba: {e}")
+            time.sleep(300) # Váratlan hiba esetén 5 perc múlva újrapróbálja
+
 # --- WEB SERVER & API ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -67,8 +155,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             try:
                 conn = sqlite3.connect('trades.db', check_same_thread=False)
                 c = conn.cursor()
-                # JAVÍTVA: Lekérjük a confidence oszlopot is (ez a 6. index)
-                c.execute("SELECT symbol, type, entry, sl, tp, reasoning, confidence FROM signals ORDER BY id DESC LIMIT 10")
+                c.execute("SELECT symbol, type, entry, sl, tp, reasoning, confidence, status FROM signals ORDER BY id DESC LIMIT 20")
                 rows = c.fetchall()
                 conn.close()
                 
@@ -80,7 +167,8 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                         "entry": row[2] if row[2] else 0,
                         "sl": row[3] if row[3] else 0,
                         "tp": row[4] if row[4] else 0,
-                        "conf": row[6] if row[6] else 85, # Ha valamiért üres lenne, csak akkor 85
+                        "conf": row[6] if row[6] else 85,
+                        "status": str(row[7]).upper(), 
                         "logic": "AI Confluence Analysed"
                     })
                 self.wfile.write(json.dumps(signals).encode())
@@ -106,30 +194,24 @@ def welcome(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(text="📱 Open TradeVision Hub", url=WEB_APP_URL))
     bot.reply_to(message, "🚀 **TradeVision AI v3.9b Pro**", reply_markup=markup)
-    
+
 @bot.message_handler(commands=['hub'])
 def send_pinned_hub(message):
     if not is_authorized(message): return
-    
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(text="📱 Launch AI Terminal", url=WEB_APP_URL))
-    
     text = (
         "🌐 **TradeVision AI Hub**\n\n"
         "Access the Elite Trading Terminal, live market data, and AI confluence scanner here. "
         "Upload your charts inside the Hub for instant analysis.\n\n"
         "👇 *Click the button below to open.*"
     )
-    
-    # Elküldi az üzenetet a gombbal
     msg = bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode='Markdown')
-    
-    # A bot automatikusan megpróbálja kitűzni az üzenetet a csoport tetejére
     try:
         bot.pin_chat_message(message.chat.id, msg.message_id)
     except Exception as e:
-        send_admin_log(f"Nem tudtam kitűzni az üzenetet. Van admin jogom a csoportban? Hiba: {e}")
-        
+        send_admin_log(f"Nem tudtam kitűzni. Hiba: {e}")
+
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if not is_authorized(message): return
@@ -176,11 +258,9 @@ def run_analysis(message, images):
         else: summary, reasoning = res_text, "Check details."
 
         try:
-            # Precízebb típus kinyerés (pl. NEUTRAL)
             match_type = re.search(r"SIGNAL:\s*([^\n]+)", summary, re.IGNORECASE)
             sig_type = match_type.group(1).strip().upper() if match_type else ("SELL" if "SELL" in summary.upper() else "BUY")
 
-            # Confidence kinyerése a szövegből (Mentjük is az adatbázisba!)
             conf_match = re.search(r'CONFIDENCE[:\s]*(\d+)', summary, re.IGNORECASE)
             conf_val = int(conf_match.group(1)) if conf_match else 85
 
@@ -193,7 +273,6 @@ def run_analysis(message, images):
             
             conn = sqlite3.connect('trades.db', check_same_thread=False)
             c = conn.cursor()
-            # JAVÍTVA: Mentjük a conf_val-t a 9. paraméterként
             c.execute("INSERT INTO signals (msg_id, symbol, type, entry, sl, tp, reasoning, status, confidence) VALUES (?,?,?,?,?,?,?,?,?)",
                       (str(status_msg.message_id), sym, sig_type, entry_p, sl_p, tp_p, reasoning.strip(), "PENDING", conf_val))
             conn.commit()
@@ -223,6 +302,11 @@ def callback_inline(call):
 
 if __name__ == "__main__":
     init_db()
+    # Web szerver indítása
     threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 10000))), HealthCheckHandler).serve_forever(), daemon=True).start()
-    send_admin_log("🚀 TradeVision Gatekeeper started!")
+    
+    # AV Auto Checker elindítása a háttérben
+    threading.Thread(target=auto_trade_checker, daemon=True).start()
+    
+    send_admin_log("🚀 TradeVision Gatekeeper started (Smart Limit Linked)!")
     bot.infinity_polling()
