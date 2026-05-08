@@ -1,4 +1,4 @@
-import os, telebot, threading, sqlite3, re, time, io
+import os, telebot, threading, sqlite3, re, time, io, json
 from telebot import apihelper, types
 from google import genai
 from PIL import Image
@@ -10,21 +10,15 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 ADMIN_ID = 1578448812 
 
-# IDE ÍRD BE A CSOPORTOD ID-JÁT
 ALLOWED_CHATS = [-1002786610592] 
 
-# --- WEB APP URL ---
-# Ide kerül majd a jövőbeli Mini Appod linkje. 
-# Amíg nincs kész a weblap, ez egy placeholder link.
-# Később ezt kicseréljük egy "t.me/A_Botod_Neve/app" stílusú linkre!
-WEB_APP_URL = "t.me/Tradevisionfxai_bot/Terminal" 
+# IDE ÍRD BE A @BotFather-TŐL KAPOTT LINKET!
+WEB_APP_URL = "https://t.me/A_Te_Botod_Neve_bot/hub" 
 
 MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 analysis_storage = {}
-
-# Átmeneti tároló az MTF képeknek
 media_groups = {}
 
 # --- DATABASE SETUP ---
@@ -48,66 +42,85 @@ def send_admin_log(text):
         bot.send_message(ADMIN_ID, full_log)
     except: pass
 
-# --- SECURITY CHECK ---
 def is_authorized(message):
-    if message.from_user.id == ADMIN_ID:
-        return True
-    if message.chat.id in ALLOWED_CHATS:
-        return True
+    if message.from_user.id == ADMIN_ID: return True
+    if message.chat.id in ALLOWED_CHATS: return True
     return False
 
 def extract_price(text, label):
     match = re.search(rf"{label}[:\s]*([\d,.]+)", text, re.IGNORECASE)
-    if not match:
-        match = re.search(rf"[\u2600-\u27BF].*?[:\s]*([\d,.]+)", text)
+    if not match: match = re.search(rf"[\u2600-\u27BF].*?[:\s]*([\d,.]+)", text)
     if match:
         try: return float(match.group(1).replace(',', ''))
         except: return None
     return None
 
-# --- WEB SERVER ---
+# --- WEB SERVER & API ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200); self.end_headers(); self.wfile.write(b"TradeVision v3.9 ACTIVE")
+        # API VÉGPONT A WEBLAPNAK
+        if self.path == '/api/signals':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*') # Engedi, hogy a Netlify olvassa!
+            self.end_headers()
+            try:
+                conn = sqlite3.connect('trades.db', check_same_thread=False)
+                c = conn.cursor()
+                c.execute("SELECT symbol, type, entry, sl, tp, reasoning FROM signals ORDER BY id DESC LIMIT 10")
+                rows = c.fetchall()
+                conn.close()
+                
+                signals = []
+                for row in rows:
+                    # Megpróbáljuk kinyerni a confidence-t a szövegből, ha nincs, 85% az alap
+                    conf_match = re.search(r'CONFIDENCE[:\s]*(\d+)%', str(row[5]), re.IGNORECASE)
+                    conf = int(conf_match.group(1)) if conf_match else 85
+                    
+                    signals.append({
+                        "asset": str(row[0]).upper(),
+                        "type": str(row[1]).upper(),
+                        "entry": row[2] if row[2] else 0,
+                        "sl": row[3] if row[3] else 0,
+                        "tp": row[4] if row[4] else 0,
+                        "conf": conf,
+                        "logic": "AI Confluence Analysed"
+                    })
+                self.wfile.write(json.dumps(signals).encode())
+            except Exception as e:
+                print(f"API Error: {e}")
+                self.wfile.write(json.dumps([]).encode())
+        else:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"TradeVision API ACTIVE")
+            
     def log_message(self, format, *args): return
 
 # --- BOT HANDLERS ---
 @bot.message_handler(func=lambda m: not is_authorized(m))
 def unauthorized_access(message):
     if message.chat.type == 'private':
-        bot.reply_to(message, "🛑 **Access Denied.** This is a private AI terminal.")
-    send_admin_log(f"⚠️ Unauthorized access! Chat ID: {message.chat.id} | User: {message.from_user.first_name}")
+        bot.reply_to(message, "🛑 **Access Denied.**")
 
 @bot.message_handler(commands=['start'])
 def welcome(message):
     if not is_authorized(message): return
-    
-    # --- JAVÍTÁS: A csoportos chatekhez URL típusú gomb kell a web_app típus helyett! ---
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(text="📱 Open TradeVision Hub", url=WEB_APP_URL))
-    
-    bot.reply_to(
-        message, 
-        "🚀 **TradeVision AI v3.9b Pro** 🚀\nSecurity active.\nVision Brain active.\nClosed Beta.\nSignals are not 100%!\nDo Your Own Research!\nSend a chart to begin.", 
-        reply_markup=markup
-    )
+    bot.reply_to(message, "🚀 **TradeVision AI v3.9b Pro**", reply_markup=markup)
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if not is_authorized(message): return
-
-    # MTF Logika: Megnézzük, hogy album része-e a kép
     if message.media_group_id:
         if message.media_group_id not in media_groups:
             media_groups[message.media_group_id] = []
-            # 2 másodperces időzítő, hogy minden kép beérkezzen az albumból
             threading.Timer(2.5, process_mtf_group, [message, message.media_group_id]).start()
-        
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded = bot.download_file(file_info.file_path)
         media_groups[message.media_group_id].append(Image.open(io.BytesIO(downloaded)))
     else:
-        # Egyetlen kép elemzése
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded = bot.download_file(file_info.file_path)
         img = Image.open(io.BytesIO(downloaded))
@@ -120,15 +133,9 @@ def process_mtf_group(message, group_id):
         del media_groups[group_id]
 
 def run_analysis(message, images):
-    send_admin_log(f"📸 Új elemzés tőle: {message.from_user.first_name} ({len(images)} kép)")
-    status_msg = bot.reply_to(message, "⏳ *Analysing the picture...*", parse_mode='Markdown')
-    
+    status_msg = bot.reply_to(message, "⏳ *Analysing...*", parse_mode='Markdown')
     try:
-        # Prompt kiegészítése MTF kontextussal, ha több kép van
-        mtf_context = ""
-        if len(images) > 1:
-            mtf_context = f"I have provided {len(images)} charts of the same asset. Perform a Multi-Timeframe analysis. Use HTF for trend and LTF for entries. "
-
+        mtf_context = f"I have provided {len(images)} charts. Perform MTF analysis. " if len(images) > 1 else ""
         prompt = (
             f"You are an Elite Institutional Analyst. {mtf_context}Use emojis for clarity. "
             "You MUST separate Part 1 and Part 2 with '|||'.\n\n"
@@ -141,20 +148,13 @@ def run_analysis(message, images):
             "⚡ CONFIDENCE: [X%]\n"
             "🧩 PATTERNS: [Specific patterns found]\n"
             "|||\n"
-            "PART 2:\n"
-            "[Detailed technical analysation using Mutliple Strategy.]"
+            "PART 2:\n[Detailed technical analysation]"
         )
-        
-        content_payload = [prompt] + images
-        response = client.models.generate_content(model=MODEL_NAME, contents=content_payload)
+        response = client.models.generate_content(model=MODEL_NAME, contents=[prompt] + images)
         res_text = response.text
-        
-        if "|||" in res_text:
-            summary, reasoning = res_text.split("|||", 1)
-        else:
-            summary, reasoning = res_text, "Check details."
+        if "|||" in res_text: summary, reasoning = res_text.split("|||", 1)
+        else: summary, reasoning = res_text, "Check details."
 
-        # DB Mentés
         try:
             entry_p = extract_price(summary, "ENTRY")
             sl_p = extract_price(summary, "STOP LOSS")
@@ -162,7 +162,6 @@ def run_analysis(message, images):
             sym = "ASSET"
             match_sym = re.search(r"SYMBOL:\s*([\w/]+)", summary)
             if match_sym: sym = match_sym.group(1)
-
             conn = sqlite3.connect('trades.db', check_same_thread=False)
             c = conn.cursor()
             c.execute("INSERT INTO signals (msg_id, symbol, type, entry, sl, tp, reasoning, status) VALUES (?,?,?,?,?,?,?,?)",
@@ -173,18 +172,14 @@ def run_analysis(message, images):
             send_admin_log(f"⚠️ DB Saving Error: {db_e}")
 
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton(text="📖 Read Detailed Confluence", callback_data=f"det_{status_msg.message_id}"))
-
+        markup.add(types.InlineKeyboardButton(text="📖 Read Confluence", callback_data=f"det_{status_msg.message_id}"))
         bot.edit_message_text(f"📊 **MARKET ANALYSIS**\n\n{summary.strip()}", message.chat.id, status_msg.message_id, reply_markup=markup)
-
     except Exception as e:
-        send_admin_log(f"❌ HIBA: {e}")
-        bot.edit_message_text("⚠️ System is overloaded. Please retry but don't spam me.", message.chat.id, status_msg.message_id)
+        bot.edit_message_text("⚠️ System overloaded.", message.chat.id, status_msg.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("det_"))
 def callback_inline(call):
     if not is_authorized(call.message): return
-    
     msg_id = call.data.split("_")[1]
     try:
         conn = sqlite3.connect('trades.db', check_same_thread=False)
@@ -192,15 +187,12 @@ def callback_inline(call):
         c.execute("SELECT reasoning FROM signals WHERE msg_id = ?", (msg_id,))
         row = c.fetchone()
         conn.close()
-        if row:
-            bot.send_message(call.message.chat.id, f"🔍 **TECHNICAL RATIONALE:**\n\n{row[0]}")
-        else:
-            bot.answer_callback_query(call.id, "Data not found.")
-    except:
-        bot.answer_callback_query(call.id, "Error loading data.")
+        if row: bot.send_message(call.message.chat.id, f"🔍 **RATIONALE:**\n\n{row[0]}")
+        else: bot.answer_callback_query(call.id, "Data not found.")
+    except: bot.answer_callback_query(call.id, "Error loading.")
 
 if __name__ == "__main__":
     init_db()
     threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 10000))), HealthCheckHandler).serve_forever(), daemon=True).start()
-    send_admin_log("🚀 TradeVision v3.9 Gatekeeper started!")
+    send_admin_log("🚀 TradeVision Gatekeeper started!")
     bot.infinity_polling()
