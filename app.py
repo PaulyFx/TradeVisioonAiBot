@@ -106,7 +106,30 @@ def welcome(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(text="📱 Open TradeVision Hub", url=WEB_APP_URL))
     bot.reply_to(message, "🚀 **TradeVision AI v3.9b Pro**", reply_markup=markup)
-
+    
+@bot.message_handler(commands=['hub'])
+def send_pinned_hub(message):
+    if not is_authorized(message): return
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(text="📱 Launch AI Terminal", url=WEB_APP_URL))
+    
+    text = (
+        "🌐 **TradeVision AI Hub**\n\n"
+        "Access the Elite Trading Terminal, live market data, and AI confluence scanner here. "
+        "Upload your charts inside the Hub for instant analysis.\n\n"
+        "👇 *Click the button below to open.*"
+    )
+    
+    # Elküldi az üzenetet a gombbal
+    msg = bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode='Markdown')
+    
+    # A bot automatikusan megpróbálja kitűzni az üzenetet a csoport tetejére
+    try:
+        bot.pin_chat_message(message.chat.id, msg.message_id)
+    except Exception as e:
+        send_admin_log(f"Nem tudtam kitűzni az üzenetet. Van admin jogom a csoportban? Hiba: {e}")
+        
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if not is_authorized(message): return
