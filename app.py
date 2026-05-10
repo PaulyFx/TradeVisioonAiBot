@@ -46,9 +46,10 @@ def is_authorized(message):
     if message.chat.id in ALLOWED_CHATS: return True
     return False
 
+# 🔥 EZT A RÉSZT JAVÍTOTTAM: OKOS ÁROLVASÓ MOTOR 🔥
 def extract_price(text, label):
-    match = re.search(rf"{label}[:\s]*([\d,.]+)", text, re.IGNORECASE)
-    if not match: match = re.search(rf"[\u2600-\u27BF].*?[:\s]*([\d,.]+)", text)
+    # Megkeresi a címkét (pl. ENTRY), átugorja a felesleges betűket/dollárjelet, és csak a számot veszi ki!
+    match = re.search(rf"{label}[^\n\d]*([\d.,]+)", text, re.IGNORECASE)
     if match:
         try: return float(match.group(1).replace(',', ''))
         except: return None
@@ -219,7 +220,7 @@ def welcome(message):
     if not is_authorized(message): return
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(text="📱 Open TradeVision Hub", url=WEB_APP_URL))
-    bot.reply_to(message, "🚀 **Welcome to TradeVision AI v4.1b Pro!** Let's conquer the markets together. 👇", reply_markup=markup)
+    bot.reply_to(message, "🚀 **Welcome to TradeVision AI v3.9b Pro!** Let's conquer the markets together. 👇", reply_markup=markup)
 
 @bot.message_handler(commands=['hub'])
 def send_pinned_hub(message):
@@ -394,10 +395,7 @@ def handle_trading_chat(message):
             "politely steer the conversation back to the markets.\n\n"
             f"User's message: {message.text}"
         )
-        # Sima szöveggenerálás hívás a Gemini API-val
         response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
-        
-        # Elküldjük a nyers szöveget, hogy elkerüljük a markdown formázási hibákat (a linkek működni fognak!)
         bot.edit_message_text(response.text, message.chat.id, status_msg.message_id, disable_web_page_preview=True)
     except Exception as e:
         bot.edit_message_text(f"❌ *Sorry, my AI brain had a hiccup:* {e}", message.chat.id, status_msg.message_id, parse_mode='Markdown')
