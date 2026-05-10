@@ -1,4 +1,5 @@
 pyTelegramBotAPI
 google-genai
 Pillow
-yfinance
+requests
+psycopg2-binary
