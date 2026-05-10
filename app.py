@@ -55,31 +55,53 @@ def extract_price(text, label):
         except: return None
     return None
 
-# --- ALPHA VANTAGE PRICE CHECKER ENGINE (SMART LIMIT) ---
+# --- JAVÍTOTT ALPHA VANTAGE MOTOR (DOCS ALAPJÁN) ---
 def get_current_price_av(sym):
-    """Lekéri az élő árat az Alpha Vantage API-ról."""
-    s = sym.upper().replace("/", "").replace("-", "")
-    base, quote = s, "USD"
+    """Lekéri az élő árat az Alpha Vantage API-ról, szigorú formázással."""
+    # 1. Formázás (Kivesszük a perjeleket, szóközöket, 'SYMBOL:' szót)
+    s = str(sym).upper().replace("SYMBOL:", "").replace(" ", "").replace("/", "").replace("-", "")
     
-    if s.endswith("USD") or s.endswith("JPY") or s.endswith("EUR"):
-        base, quote = s[:-3], s[-3:]
-    elif s.endswith("USDT"):
-        base, quote = s[:-4], "USDT"
-        
+    # 2. Szétbontás Base és Quote devizákra a CURRENCY_EXCHANGE_RATE végponthoz
+    base, quote = s, "USD" # Alapértelmezetten mindent USD-hez mérünk
+    
+    if s == "GOLD" or "XAU" in s: base, quote = "XAU", "USD"
+    elif s == "SILVER" or "XAG" in s: base, quote = "XAG", "USD"
+    elif s.endswith("USDT"): base, quote = s[:-4], "USDT"
+    elif s.endswith("USD"): base, quote = s[:-3], "USD"
+    elif s.endswith("EUR"): base, quote = s[:-3], "EUR"
+    elif s.endswith("JPY"): base, quote = s[:-3], "JPY"
+    elif len(s) == 6: base, quote = s[:3], s[3:]
+    
     url_currency = f"https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={base}&to_currency={quote}&apikey={ALPHA_VANTAGE_API_KEY}"
+    
     try:
-        data = requests.get(url_currency).json()
+        req = requests.get(url_currency, timeout=10)
+        data = req.json()
         if "Realtime Currency Exchange Rate" in data:
             return float(data["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
-    except Exception: pass
+        elif "Information" in data or "Note" in data or "Error Message" in data:
+            print(f"AV API ÜZENET (Deviza): {data}") # Ez bekerül a Render Logba!
+    except Exception as e:
+        print(f"AV Request Hiba: {e}")
 
-    url_quote = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={s}&apikey={ALPHA_VANTAGE_API_KEY}"
+    # 3. Ha nem deviza/kriptó volt, akkor részvény/index a GLOBAL_QUOTE végponttal
+    ticker = s
+    if "US100" in s or "NASDAQ" in s: ticker = "QQQ"
+    elif "US500" in s or "SPX" in s: ticker = "SPY"
+    elif "US30" in s or "DOW" in s: ticker = "DIA"
+    
+    url_quote = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={ticker}&apikey={ALPHA_VANTAGE_API_KEY}"
+    
     try:
-        data = requests.get(url_quote).json()
+        req = requests.get(url_quote, timeout=10)
+        data = req.json()
         if "Global Quote" in data and "05. price" in data["Global Quote"]:
             price_str = data["Global Quote"]["05. price"]
             if price_str: return float(price_str)
-    except Exception: pass
+        elif "Information" in data or "Note" in data or "Error Message" in data:
+            print(f"AV API ÜZENET (Részvény): {data}") # Ez is bekerül a Render Logba!
+    except Exception as e:
+        pass
         
     return None
 
@@ -94,23 +116,19 @@ def auto_trade_checker():
             conn.close()
             
             if not trades:
-                # Ha nincs nyitott trade, ne égessük a kvótát! Alszik 15 percet és újra megnézi az adatbázist.
-                time.sleep(900) 
+                time.sleep(900) # Alszik 15 percet, ha nincs trade
                 continue 
             
-            # 1. TRÜKK: Egyedi szimbólumok kigyűjtése (spórolás)
             unique_symbols = set([t[1] for t in trades])
             num_symbols = len(unique_symbols)
             
-            # Árak lekérdezése egyszer szimbólumonként
             current_prices = {}
             for sym in unique_symbols:
                 price = get_current_price_av(sym)
                 if price:
                     current_prices[sym] = price
-                time.sleep(2) # Kicsi szünet az AV rate limit miatt (max 5 hívás / perc)
+                time.sleep(15) # 15 mp szünet hívásonként, hogy biztos ne kapjunk Ban-t
 
-            # Trade-ek ellenőrzése a memóriában lévő árakkal
             if current_prices:
                 conn = sqlite3.connect('trades.db', check_same_thread=False)
                 c = conn.cursor()
@@ -134,15 +152,13 @@ def auto_trade_checker():
                 conn.commit()
                 conn.close()
 
-            # 2. TRÜKK: Dinamikus időzítő a napi 24 API híváshoz
-            # Képlet: 60 perc szorozva a lekérdezett szimbólumok számával.
             sleep_minutes = 60 * num_symbols
-            send_admin_log(f"⏱️ AV Checker: {num_symbols} egyedi asset frissítve. Alvás {sleep_minutes} percig a kvóta védelme érdekében.")
+            print(f"⏱️ AV Checker alszik {sleep_minutes} percig.")
             time.sleep(sleep_minutes * 60)
             
         except Exception as e:
             print(f"Auto Checker hiba: {e}")
-            time.sleep(300) # Váratlan hiba esetén 5 perc múlva újrapróbálja
+            time.sleep(300)
 
 # --- WEB SERVER & API ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -193,7 +209,7 @@ def welcome(message):
     if not is_authorized(message): return
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(text="📱 Open TradeVision Hub", url=WEB_APP_URL))
-    bot.reply_to(message, "🚀 **TradeVision AI v3.9b Pro**", reply_markup=markup)
+    bot.reply_to(message, "🚀 **TradeVision AI v4.0b Pro**", reply_markup=markup)
 
 @bot.message_handler(commands=['hub'])
 def send_pinned_hub(message):
@@ -211,6 +227,56 @@ def send_pinned_hub(message):
         bot.pin_chat_message(message.chat.id, msg.message_id)
     except Exception as e:
         send_admin_log(f"Nem tudtam kitűzni. Hiba: {e}")
+
+# KÉZI ELLENŐRZŐ GOMB (Teszteléshez és hibakereséshez)
+@bot.message_handler(commands=['check'])
+def manual_price_check(message):
+    if not is_authorized(message): return
+    
+    bot.reply_to(message, "🔄 **Manuális árellenőrzés indítása...**\nLekérdezem a PENDING trade-eket az Alpha Vantage API-tól.")
+    
+    try:
+        conn = sqlite3.connect('trades.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute("SELECT id, symbol, type, sl, tp FROM signals WHERE status='PENDING'")
+        trades = c.fetchall()
+        
+        if not trades:
+            bot.send_message(message.chat.id, "Nincs nyitott (PENDING) trade az adatbázisban.")
+            conn.close()
+            return
+            
+        updated_count = 0
+        for t_id, sym, t_type, sl, tp in trades:
+            if not sl or not tp: continue
+            
+            # Lekérjük az árat
+            price = get_current_price_av(sym)
+            
+            if not price:
+                bot.send_message(message.chat.id, f"⚠️ Nem kaptam árat az API-tól a(z) `{sym}` szimbólumhoz. Nézd meg a Render logokat!")
+                continue
+            
+            new_status = None
+            if "BUY" in t_type:
+                if price >= tp: new_status = "WON"
+                elif price <= sl: new_status = "LOST"
+            elif "SELL" in t_type:
+                if price <= tp: new_status = "WON"
+                elif price >= sl: new_status = "LOST"
+                
+            if new_status:
+                c.execute("UPDATE signals SET status=? WHERE id=?", (new_status, t_id))
+                bot.send_message(message.chat.id, f"🎯 **FRISSÍTVE!** {sym} -> {new_status}\nAktuális API ár: {price}")
+                updated_count += 1
+            else:
+                bot.send_message(message.chat.id, f"📊 `{sym}` még nyitva. Jelenlegi API ár: {price}\n(SL: {sl} | TP: {tp})")
+                
+        conn.commit()
+        conn.close()
+            
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Hiba az ellenőrzés közben: {e}")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -302,11 +368,7 @@ def callback_inline(call):
 
 if __name__ == "__main__":
     init_db()
-    # Web szerver indítása
     threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 10000))), HealthCheckHandler).serve_forever(), daemon=True).start()
-    
-    # AV Auto Checker elindítása a háttérben
     threading.Thread(target=auto_trade_checker, daemon=True).start()
-    
-    send_admin_log("🚀 TradeVision Gatekeeper started (Smart Limit Linked)!")
+    send_admin_log("🚀 TradeVision API Started (Docs-Compliant)")
     bot.infinity_polling()
