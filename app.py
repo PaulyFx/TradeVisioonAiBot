@@ -183,7 +183,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                         "tp": row[4] if row[4] else 0,
                         "conf": row[6] if row[6] else 85,
                         "status": str(row[7]).upper(), 
-                        "reasoning": row[5] if row[5] else "No details provided."
+                        "reasoning": row[7] if row[7] else "No details provided."
                     })
                 self.wfile.write(json.dumps(signals).encode())
             except Exception as e:
